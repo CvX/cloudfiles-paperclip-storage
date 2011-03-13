@@ -107,6 +107,7 @@ module Paperclip
       def flush_writes #:nodoc:
         @queued_for_write.each do |style, file|
           object = cloudfiles_container.create_object(path(style), false)
+          object.purge_from_cdn
           object.load_from_filename(file)
         end
         @queued_for_write = {}
@@ -115,6 +116,7 @@ module Paperclip
       def flush_deletes #:nodoc:
         @queued_for_delete.each do |path|
           cloudfiles_container.delete_object(path)
+          cloudfiles_container.object(path).purge_from_cdn
         end
         @queued_for_delete = []
       end
