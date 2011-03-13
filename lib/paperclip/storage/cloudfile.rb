@@ -25,6 +25,7 @@ module Paperclip
     #       username: minter
     #       api_key: 87k...
     #       servicenet: true
+    #       auth_url: https://lon.auth.api.rackspacecloud.com/v1.0
     #   This is not required, however, and the file may simply look like this:
     #     username: minter...
     #     api_key: 11q...
@@ -40,6 +41,12 @@ module Paperclip
     #   you will want to interpolate. Keys should be unique, like filenames, and despite the fact that
     #   Cloud Files (strictly speaking) does not support directories, you can still use a / to
     #   separate parts of your file name, and they will show up in the URL structure.
+    # * +auth_url+: The URL to the authentication endpoint. If blank, defaults to the Rackspace Cloud Files
+    #   USA endpoint. You can use this to specify things like the Rackspace Cloud Files UK infrastructure, or
+    #   a non-Rackspace OpenStack Swift installation.  Requires 1.4.11 or higher of the Cloud Files gem.
+    # * +ssl+: Whether or not to serve this content over SSL.  If set to true, serves content as https, otherwise
+    #   not.  Can also take a lambda that returns true or false (for example, if the attachment object has a user object
+    #   and that user has ssl enabled)
     module Cloudfile
       def self.extended base
         begin
@@ -47,20 +54,23 @@ module Paperclip
         rescue LoadError => e
           e.message << " (You may need to install the cloudfiles gem)"
           raise e
-        end
+        end unless defined?(CloudFiles)
         @@container ||= {}
         base.instance_eval do
           # If they were not passed in then default to yml config file.
-          if(!@options[:cloudfiles_credentials])
-              @options[:cloudfiles_credentials] = Rails.root.to_s + "/config/paperclip_cloud_storage.yml"
+          unless @options[:cloudfiles_credentials]
+            @options[:cloudfiles_credentials] = Rails.root.to_s + "/config/paperclip_cloud_storage.yml"
           end
 
           @cloudfiles_credentials = parse_credentials(@options[:cloudfiles_credentials])
-          @container_name         = @options[:container] || @cloudfiles_credentials[:container]
+          @container_name         = @options[:container] || options[:container_name] || @cloudfiles_credentials[:container] || @cloudfiles_credentials[:container_name]
           @container_name         = @container_name.call(self) if @container_name.is_a?(Proc)
+          @cloudfiles_options     = @options[:cloudfiles_options] || {}
           @@cdn_url               = cloudfiles_container.cdn_url
+          @@ssl_url               = cloudfiles_container.cdn_ssl_url
+          @use_ssl                = @options[:ssl] || false
           @path_filename          = ":cf_path_filename" unless @url.to_s.match(/^:cf.*filename$/)
-          @url = @@cdn_url + "/#{URI.encode(@path_filename).gsub(/&/, '%26')}"
+          @url = (@use_ssl == true ? @@ssl_url : @@cdn_url) + "/#{URI.encode(@path_filename).gsub(/&/,'%26')}"
           @path = (Paperclip::Attachment.default_options[:path] == @options[:path]) ? ":attachment/:id/:style/:basename.:extension" : @options[:path]
         end
         Paperclip.interpolates(:cf_path_filename) do |attachment, style|
@@ -69,8 +79,10 @@ module Paperclip
       end
 
       def cloudfiles
-        @@cf ||= CloudFiles::Connection.new(:username => @cloudfiles_credentials[:username], :api_key => @cloudfiles_credentials[:api_key], :snet => @cloudfiles_credentials[:servicenet])
-        @@cf
+        @@cf ||= CloudFiles::Connection.new(:username => @cloudfiles_credentials[:username],
+                                            :api_key => @cloudfiles_credentials[:api_key],
+                                            :snet => @cloudfiles_credentials[:servicenet],
+                                            :auth_url => (@cloudfiles_credentials[:auth_url] || "https://auth.api.rackspacecloud.com/v1.0"))
       end
 
       def create_container
@@ -96,19 +108,22 @@ module Paperclip
         cloudfiles_container.object_exists?(path(style))
       end
 
+      def read
+        self.data
+      end
+
       # Returns representation of the data of the file assigned to the given
       # style, in the format most representative of the current storage.
       def to_file style = default_style
         @queued_for_write[style] || cloudfiles_container.create_object(path(style))
       end
-
       alias_method :to_io, :to_file
 
       def flush_writes #:nodoc:
         @queued_for_write.each do |style, file|
           object = cloudfiles_container.create_object(path(style), false)
           object.purge_from_cdn
-          object.load_from_filename(file)
+          object.write(file)
         end
         @queued_for_write = {}
       end
@@ -133,7 +148,6 @@ module Paperclip
             raise ArgumentError, "Credentials are not a path, file, or hash."
         end
       end
-
       private :find_credentials
 
     end
