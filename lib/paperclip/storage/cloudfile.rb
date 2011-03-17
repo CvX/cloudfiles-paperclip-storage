@@ -131,7 +131,9 @@ module Paperclip
       def flush_deletes #:nodoc:
         @queued_for_delete.each do |path|
           cloudfiles_container.delete_object(path)
-          cloudfiles_container.object(path).purge_from_cdn
+          if cloudfiles_container.object_exists?(path)
+            cloudfiles_container.object(path).purge_from_cdn
+          end
         end
         @queued_for_delete = []
       end
